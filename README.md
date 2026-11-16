@@ -7,8 +7,10 @@ Interactive modal analysis of ObieApp roving-point FRF measurements. You pick re
 Python 3 with `numpy`, `scipy` and `matplotlib`:
 
 ```
-pip install numpy scipy matplotlib
+pip install -r requirements.txt
 ```
+
+Tested with Python 3.14, numpy 2.5, scipy 1.18 and matplotlib 3.11.
 
 ## Usage
 
@@ -40,6 +42,7 @@ The `peak_Hz` and `half_width_bins` columns in a saved `modes.csv` use the `--mo
 | `[` / `]` | Narrow / widen the fit band by one bin each side and refit |
 | `u` | Undo the last accepted mode |
 | ← / → or Prev / Next | Step through accepted modes; **Latest** returns to the end |
+| `f` | Reopen the fitted-model window if you closed it |
 | `s` / `q` | Save / save and quit |
 
 Closing the window without `s` or `q` discards the session. Clicks are ignored while the toolbar's zoom or pan is active.
@@ -47,9 +50,11 @@ Closing the window without `s` or `q` discards the session. Clicks are ignored w
 ## Reading the window
 
 - **Top:** rms |H| over all points. Grey is measured, blue is the residual after the accepted modes, orange is the sum of accepted modes. A peak still in blue is a mode not yet fitted.
-- **Nyquist plots:** receptance H/(−ω²) for the two points that respond most strongly. Blue dots are the measured bins in the fit band, orange is the fitted circle, ★ is the resonance (f_r), and + is the offset from all other modes.
-- **Zoom:** the residual before (blue) and after (green) removing this mode, the mode alone (orange), and the fit band (shaded).
+- **Nyquist plots:** receptance H/(−ω²) for the two points that respond most strongly. Blue dots are the measured bins in the fit band, orange is the fitted circle, ★ is the resonance (f_r), + is the offset from all other modes, and ○ with grey axis lines marks the origin (0,0).
+- **Zoom:** the residual before (blue dots = measured bins) and after (green) removing this mode, the mode alone drawn smoothly on a fine grid (orange, ★ at f_r), and the fit band (shaded).
 - **Mode shape:** the real part of the mode shape on the measurement grid, scaled to ±1. The black line is the nodal line.
+
+A second window, **fitted model FRF**, shows the measured rms |H| with a dot at every bin next to the accepted modes drawn on a grid 8× finer than the measurement. Each mode is marked and labelled with its natural frequency, so you can see the true peak positions even when they fall between measured bins. A proposed mode shows as a dashed green curve. The window follows the step browser.
 
 A good fit has data points on the circle, a green curve that drops to the local background with no leftover peak, and a smooth mode shape.
 
@@ -59,6 +64,7 @@ Saved to `CircleFit/<test name>/`:
 
 - `modes.csv`: f_r, η, ζ, Q, the circle-only estimates, fit band and local improvement for each mode
 - `mode_shapes.csv`: per point, the real mode shape plus |A| and phase for each mode
+- `model_frf.png`: the fitted-model window, with all accepted modes
 - `summary.png`: measured data, mode sum and residual, plus the residual after each step
 - `mode_shapes.png`: all mode shapes in one grid
 - `steps/mode_NN_<f>Hz.png`: the circle-fit figure for each accepted mode

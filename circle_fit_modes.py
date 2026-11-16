@@ -271,6 +271,27 @@ def contribution(m, w):
     return (-(w**2) * mode_basis(w, wr, m["eta"]))[None, :] * m["A"][:, None]
 
 
+def fine_grid(f_lo, f_hi, df, modes, over=8):
+    """Frequencies `over` times denser than the measurement, plus extra-dense
+    points across each mode's half-power band so every peak is fully drawn."""
+    parts = [np.arange(f_lo, f_hi, df / over)]
+    for m in modes:
+        hw = max(m["eta"] * m["fr"] / 2, df / over)
+        parts.append(np.linspace(m["fr"] - 8 * hw, m["fr"] + 8 * hw, 161))
+    g = np.concatenate(parts)
+    return np.unique(g[(g >= f_lo) & (g <= f_hi) & (g > 0)])
+
+
+def model_db(modes, f):
+    """rms over points of the sum of the given modes, in dB, at any frequencies f.
+    Uses sum_p |sum_m A_pm g_m|^2 = g^H (A^H A) g, so no points x f array is built."""
+    w = 2 * np.pi * np.asarray(f, float)
+    A = np.column_stack([m["A"] for m in modes])                      # points x modes
+    G = np.vstack([-(w**2) * mode_basis(w, 2 * np.pi * m["fr"], m["eta"]) for m in modes])
+    p = np.einsum("mf,mf->f", G.conj(), (A.conj().T @ A) @ G).real / A.shape[0]
+    return 10 * np.log10(np.maximum(p, 0) + 1e-60)
+
+
 # ----------------------------------------------------------------------------
 # Fitting session: residual bookkeeping
 # ----------------------------------------------------------------------------
@@ -377,6 +398,11 @@ def plot_nyquist(ax, ds, m, R_band, p, legend=False):
     zr = m["A"][p] * mode_basis(np.array([wr]), wr, m["eta"]) + m["B"][p]
     ax.plot(zr.real, zr.imag, "r*", ms=11, label="f_r")
     ax.plot(m["B"][p].real, m["B"][p].imag, "k+", ms=8, label="offset")
+    # origin: grey axis lines plus a marker (which also keeps it inside the view)
+    ax.axhline(0, color="0.55", lw=0.7, zorder=0)
+    ax.axvline(0, color="0.55", lw=0.7, zorder=0)
+    ax.plot(0, 0, "o", mfc="none", mec="k", ms=7, mew=1.2, label="origin (0,0)")
+    ax.annotate("(0,0)", (0, 0), xytext=(5, 5), textcoords="offset points", fontsize=7)
     ax.set_aspect("equal", "datalim")
     ax.set_title(f"point {ds['labels'][p]}: receptance H/(-w²)", fontsize=9)
     ax.tick_params(labelsize=7)
@@ -388,9 +414,12 @@ def plot_zoom(ax, ds, m, R_before_zz, zz):
     f = ds["f"]
     w = 2 * np.pi * f
     c = contribution(m, w[zz])
+    ff = fine_grid(f[zz[0]], f[zz[-1]], ds["df"], [m], over=10)
     ax.plot(f[zz], mif_db(ds["H"][:, zz]), color="0.7", lw=1, label="measured")
-    ax.plot(f[zz], mif_db(R_before_zz), color="C0", lw=1.3, label="residual before")
-    ax.plot(f[zz], mif_db(c), color="C1", lw=1.2, label="this mode")
+    ax.plot(f[zz], mif_db(R_before_zz), ".-", color="C0", lw=1.3, ms=3,
+            label="residual before (bins)")
+    ax.plot(ff, model_db([m], ff), color="C1", lw=1.2, label="this mode (smooth)")
+    ax.plot(m["fr"], model_db([m], [m["fr"]])[0], "r*", ms=9)
     ax.plot(f[zz], mif_db(R_before_zz - c), color="C2", lw=1.3, label="residual after")
     ax.axvspan(f[m["idx"][0]], f[m["idx"][-1]], color="C1", alpha=0.1)
     ax.axvline(m["fr"], color="r", lw=0.8, ls="--")
@@ -399,6 +428,37 @@ def plot_zoom(ax, ds, m, R_before_zz, zz):
     ax.tick_params(labelsize=7)
     ax.legend(fontsize=7)
     ax.grid(alpha=0.3)
+
+
+def plot_model_frf(ax, ds, modes, f_lo, f_hi, proposal=None):
+    """Measured rms |H| at its bins next to the fitted modes on a fine grid,
+    with every mode's natural frequency marked and labelled."""
+    f = ds["f"]
+    v = (f >= f_lo) & (f <= f_hi)
+    ax.plot(f[v], mif_db(ds["H"][:, v]), ".-", color="0.65", lw=0.6, ms=1.5,
+            label=f"measured (a bin every {ds['df']:.3f} Hz)")
+    if modes:
+        ff = fine_grid(f_lo, f_hi, ds["df"], modes)
+        ax.plot(ff, model_db(modes, ff), color="C1", lw=1.0,
+                label=f"fitted model, {len(modes)} mode{'s' if len(modes) > 1 else ''} "
+                      "(smooth: 8x finer grid)")
+        for m in modes:
+            y = model_db(modes, [m["fr"]])[0]
+            ax.plot(m["fr"], y, "v", color="C3", ms=4)
+            ax.annotate(f"{m['fr']:.2f}", (m["fr"], y), xytext=(0, 5),
+                        textcoords="offset points", rotation=90, fontsize=7,
+                        ha="center", va="bottom", color="C3")
+    if proposal is not None:
+        ff = fine_grid(f_lo, f_hi, ds["df"], [proposal])
+        ff = ff[np.abs(ff - proposal["fr"]) < max(40 * proposal["eta"] * proposal["fr"],
+                                                   20 * ds["df"])]
+        ax.plot(ff, model_db([proposal], ff), "--", color="C2", lw=1.2,
+                label=f"proposed mode, {proposal['fr']:.2f} Hz")
+    ax.set_xscale("log")
+    ax.set_xlabel("Hz")
+    ax.set_ylabel("rms |H| over points (dB)")
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(loc="upper left", fontsize=8)
 
 
 def mode_title(m):
@@ -412,7 +472,8 @@ def mode_title(m):
 # ----------------------------------------------------------------------------
 class FitGUI:
     HELP = ("click a peak = fit it   n = next peak   a/Enter = accept   x/Esc = discard   "
-            "[ ] = band -/+   u = undo   \u2190 \u2192 = browse steps   s = save   q = save & quit")
+            "[ ] = band -/+   u = undo   \u2190 \u2192 = browse steps   f = model FRF window   "
+            "s = save   q = save & quit")
 
     def __init__(self, sess, outdir):
         import matplotlib.pyplot as plt
@@ -431,6 +492,8 @@ class FitGUI:
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
         for k in ("keymap.save", "keymap.quit", "keymap.back", "keymap.forward"):
             plt.rcParams[k] = []
+        plt.rcParams["keymap.fullscreen"] = ["ctrl+f"]    # free up f
+        self.set_title(self.fig, "circle fit")
         f = sess.f
         self.view = (f >= sess.fmin * 0.8) & (f <= sess.fmax)
         self.ax_top.set_xscale("log")
@@ -445,6 +508,45 @@ class FitGUI:
         self.btn_prev.on_clicked(lambda e: self.browse(-1))
         self.btn_next.on_clicked(lambda e: self.browse(+1))
         self.btn_live.on_clicked(lambda e: self.go_live())
+
+        self.fig2 = None
+        self.open_model_window()
+
+    # -- second window: fitted model on a fine frequency grid -----------------
+    def set_title(self, fig, what):
+        try:
+            fig.canvas.manager.set_window_title(f"{self.s.ds['name']}: {what}")
+        except Exception:
+            pass
+
+    def open_model_window(self):
+        self.fig2 = self.plt.figure(figsize=(15, 6.5))
+        self.ax_model = self.fig2.add_subplot(111)
+        self.set_title(self.fig2, "fitted model FRF")
+        self.fig2.canvas.mpl_connect("key_press_event", self.on_key)
+        self.fig2.canvas.mpl_connect("close_event", self.on_model_closed)
+        self.draw_model(keep_limits=False)
+        self.fig2.tight_layout()
+
+    def on_model_closed(self, ev):
+        self.fig2 = None
+
+    def draw_model(self, keep_limits=True):
+        if self.fig2 is None:
+            return
+        ax, s = self.ax_model, self.s
+        lims = (ax.get_xlim(), ax.get_ylim()) if keep_limits else None
+        ax.clear()
+        n = self.shown()
+        plot_model_frf(ax, s.ds, s.modes[:n], s.fmin * 0.8, s.fmax,
+                       None if self.browsing() else self.proposal)
+        what = f"step {n} of {len(s.modes)}" if self.browsing() else f"{n} modes accepted"
+        ax.set_title(f"{s.ds['name']}: fitted model ({what}). Labels are the fitted natural "
+                     "frequencies in Hz; use the toolbar zoom to look closely.", fontsize=10)
+        if lims:
+            ax.set_xlim(lims[0])
+            ax.set_ylim(lims[1])
+        self.fig2.canvas.draw_idle()
 
     # -- state ----------------------------------------------------------
     def shown(self):
@@ -546,6 +648,7 @@ class FitGUI:
     def redraw(self):
         self.draw_top()
         self.fig.canvas.draw_idle()
+        self.draw_model()
 
     # -- step browsing ----------------------------------------------------
     def browse(self, d):
@@ -628,10 +731,18 @@ class FitGUI:
                 self.proposal = None
                 self.clear_bottom(f"Undid mode {m['n']} ({m['fr']:.2f} Hz).")
             self.redraw()
+        elif k == "f":
+            if self.fig2 is None:
+                self.open_model_window()
+                self.fig2.show()
+            else:
+                self.draw_model()
         elif k == "s":
             save_results(self.s, self.outdir)
         elif k == "q":
             save_results(self.s, self.outdir)
+            if self.fig2 is not None:
+                self.plt.close(self.fig2)
             self.plt.close(self.fig)
 
     def run(self):
@@ -716,6 +827,14 @@ def save_results(sess, outdir):
     axs[1].grid(alpha=0.3)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "summary.png"), dpi=100)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(15, 6.5))
+    plot_model_frf(ax, ds, modes, sess.fmin * 0.8, sess.fmax)
+    ax.set_title(f"{ds['name']}: fitted model on a fine frequency grid "
+                 "(labels = natural frequencies, Hz)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, "model_frf.png"), dpi=120)
     plt.close(fig)
 
     if modes:
