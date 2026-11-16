@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Incremental Circle Fit</title>
+  <meta name="description" content="Interactive incremental circle-fit modal analysis of ObieApp roving-point FRF measurements, running entirely in the browser.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎻</text></svg>">
+  <link rel="stylesheet" href="web/app.css?v=1">
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" crossorigin="anonymous"></script>
+  <script src="web/app.js?v=1" defer></script>
+</head>
+<body>
+
+<div id="loading" class="loading-overlay">
+  <div class="spin"></div>
+  <div class="load-title" id="load-title">Loading Python + NumPy + SciPy…</div>
+  <div class="load-sub">First load may take 15–30 s; after that it is cached.</div>
+</div>
+
+<div class="app">
+
+  <header class="obie-header">
+    <div class="brand">
+      <div class="logo-icon">🎻</div>
+      <h1>Incremental Circle Fit</h1>
+    </div>
+    <span class="crumb">· modal analysis for ObieApp data</span>
+    <div class="gap"></div>
+    <a class="btn" href="https://github.com/annejumper/IncrementalCircleFit" target="_blank" rel="noopener">GitHub</a>
+  </header>
+
+  <div class="toolbar">
+    <label class="tb-btn accent file-btn" title="Pick a test folder (it contains TRF/ and template.json), or a folder of several tests">
+      📁 Open test folder
+      <input id="dir-input" type="file" webkitdirectory directory multiple hidden>
+    </label>
+    <span id="dataset-name" class="folder-name-disp"></span>
+    <div class="tb-sep"></div>
+    <button class="tb-btn" data-act="next" title="Fit the next peak above the last accepted mode (n)">Next peak <kbd>n</kbd></button>
+    <button class="tb-btn start" data-act="accept" title="Accept the proposed fit (a or Enter)">Accept <kbd>a</kbd></button>
+    <button class="tb-btn" data-act="discard" title="Discard the proposed fit (x or Esc)">Discard <kbd>x</kbd></button>
+    <div class="tb-sep"></div>
+    <span class="tb-lbl">Band</span>
+    <button class="tb-btn" data-act="band-" title="Narrow the fit band by one bin each side ([)">−</button>
+    <button class="tb-btn" data-act="band+" title="Widen the fit band by one bin each side (])">+</button>
+    <span class="tb-lbl">Centre</span>
+    <button class="tb-btn" data-act="left" title="Move the fit centre one bin lower (,)">◀</button>
+    <button class="tb-btn" data-act="right" title="Move the fit centre one bin higher (.)">▶</button>
+    <div class="tb-sep"></div>
+    <button class="tb-btn" data-act="undo" title="Undo the last accepted mode (u)">Undo <kbd>u</kbd></button>
+    <div class="tb-sep"></div>
+    <span class="tb-lbl">Steps</span>
+    <button class="tb-btn" data-act="prev" title="Previous step (←)">◀ Prev</button>
+    <button class="tb-btn" data-act="nextstep" title="Next step (→)">Next ▶</button>
+    <button class="tb-btn" data-act="latest" title="Back to the latest step">Latest</button>
+    <div class="tb-flex"></div>
+    <button class="tb-btn" data-act="options">Options</button>
+    <button class="tb-btn" data-act="export">Export</button>
+    <button class="tb-btn" data-act="tune" title="Show or hide the analytical plate panel">Analytical ▸</button>
+    <button class="tb-btn" data-act="help">Help</button>
+  </div>
+
+  <div class="status-row">
+    <span id="status" class="status-txt">Open a test folder to begin.</span>
+    <span id="status-right" class="status-right"></span>
+  </div>
+
+  <div class="body">
+
+    <aside class="sidebar">
+      <div class="side-hdr">Accepted modes</div>
+      <div id="mode-list" class="mode-list"><div class="list-empty">None yet</div></div>
+    </aside>
+
+    <main class="main">
+      <div id="welcome" class="welcome">
+        <div class="card">
+          <h2>Incremental circle-fit modal analysis</h2>
+          <p>Open an ObieApp test folder: the one containing <code>TRF/</code> and <code>template.json</code>.
+            You can also pick a folder of several tests and choose one.</p>
+          <p>Click a peak to circle-fit it, accept it to subtract it from every FRF, and repeat.
+            The analytical plate panel compares your modes with thin-plate theory.</p>
+          <p class="muted">Everything runs in your browser. Your data files are read locally and never uploaded.</p>
+        </div>
+      </div>
+      <div id="workspace" class="workspace hidden">
+        <div id="plot-top" class="plot plot-top"></div>
+        <div class="bottom">
+          <div class="cell">
+            <div id="plot-nyq" class="plot"></div>
+            <div class="point-row">
+              <span class="tb-lbl">Point</span>
+              <input id="point-slider" type="range" min="0" max="0" value="0">
+              <span id="point-label" class="point-label"></span>
+              <button class="tb-btn" id="point-strongest" title="Show the strongest point">Strongest</button>
+            </div>
+          </div>
+          <div class="cell"><div id="plot-est" class="plot"></div></div>
+          <div class="cell"><div id="plot-zoom" class="plot"></div></div>
+          <div class="cell">
+            <div id="plot-shape" class="plot"></div>
+            <div id="shape-caption" class="caption"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside id="tune" class="tune hidden">
+      <div class="side-hdr">Analytical plate
+        <label class="inline"><input type="checkbox" id="theory-on" checked> show lines</label>
+      </div>
+      <div class="tune-body">
+        <p class="hint">Thin cantilever plate, clamped along one edge (the clamp can be an elastic,
+          rotational spring). Tick <b>vary</b> for the settings Optimize may change.</p>
+        <div id="sliders"></div>
+        <div class="band-row">
+          <span class="tb-lbl">Band (Hz)</span>
+          <input id="band-lo" type="number" class="tb-inp num" placeholder="all">
+          <span class="tb-lbl">–</span>
+          <input id="band-hi" type="number" class="tb-inp num" placeholder="all">
+          <button class="tb-btn" id="band-view" title="Use the frequency range currently shown in the top plot">Plot view</button>
+          <button class="tb-btn" id="band-all">All</button>
+        </div>
+        <div class="tune-actions">
+          <button class="tb-btn start" id="tune-opt">Optimize</button>
+          <button class="tb-btn" id="tune-reset">Reset</button>
+          <button class="tb-btn" id="tune-copy" title="Copy the matching desktop command-line options">Copy settings</button>
+        </div>
+        <div id="tune-msg" class="tune-msg"></div>
+        <div id="tune-score" class="tune-score"></div>
+        <table class="pairs"><thead><tr><th>Peak (Hz)</th><th>#</th><th>Analytical (Hz)</th><th>Diff</th></tr></thead>
+          <tbody id="pairs-body"></tbody></table>
+        <p class="hint">Peaks are your accepted modes, paired one-to-one with analytical modes by
+          frequency (not by mode shape). Thickness, E and density only matter together as h·√(E/ρ), so vary at most one of them.</p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- choose a test when the picked folder holds several -->
+<div class="modal-overlay" id="pick-modal">
+  <div class="modal-box">
+    <div class="modal-header"><span class="modal-title">Choose a test</span>
+      <button class="modal-close" data-close>✕</button></div>
+    <div class="modal-body"><div id="pick-list" class="pick-list"></div></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="options-modal">
+  <div class="modal-box">
+    <div class="modal-header"><span class="modal-title">Options</span>
+      <button class="modal-close" data-close>✕</button></div>
+    <div class="modal-body">
+      <div class="pref-row"><label>Frequency range (Hz)</label>
+        <input id="opt-fmin" type="number" class="tb-inp num" value="20"> –
+        <input id="opt-fmax" type="number" class="tb-inp num" value="7000"></div>
+      <div class="pref-row"><label>Flip sign</label>
+        <input id="opt-flip" type="checkbox"> <span class="pref-hint-inline">for an accelerometer mounted upside down relative to the hammer</span></div>
+      <div class="pref-row"><label>Global refinement</label>
+        <input id="opt-refine" type="checkbox" checked> <span class="pref-hint-inline">least-squares f<sub>r</sub>, η over all points (recommended)</span></div>
+      <p class="hint">Changing these reloads the test and re-fits your accepted modes.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="act-btn" data-close>Cancel</button>
+      <button class="act-btn accent" id="opt-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="export-modal">
+  <div class="modal-box">
+    <div class="modal-header"><span class="modal-title">Export &amp; replay</span>
+      <button class="modal-close" data-close>✕</button></div>
+    <div class="modal-body">
+      <p class="hint">The same files the desktop script saves.</p>
+      <div class="export-row">
+        <button class="act-btn accent" id="dl-modes">Download modes.csv</button>
+        <button class="act-btn accent" id="dl-shapes">Download mode_shapes.csv</button>
+      </div>
+      <div class="pref-row col"><label>Replay string (peak Hz : half-width bins)</label>
+        <textarea id="replay-text" rows="3" spellcheck="false"></textarea></div>
+      <div class="export-row">
+        <button class="act-btn" id="replay-copy">Copy</button>
+        <button class="act-btn" id="replay-run">Replay into this test</button>
+        <span class="save-msg" id="export-msg"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="help-modal">
+  <div class="modal-box wide">
+    <div class="modal-header"><span class="modal-title">Help</span>
+      <button class="modal-close" data-close>✕</button></div>
+    <div class="modal-body help">
+      <table class="keys">
+        <tr><td>click a peak</td><td>circle-fit it (snaps to the nearest peak)</td></tr>
+        <tr><td>shift + click</td><td>fit centred exactly on the clicked bin</td></tr>
+        <tr><td><kbd>n</kbd></td><td>fit the next peak above the last accepted mode</td></tr>
+        <tr><td><kbd>a</kbd> / <kbd>Enter</kbd></td><td>accept: subtract the mode from every FRF</td></tr>
+        <tr><td><kbd>x</kbd> / <kbd>Esc</kbd></td><td>discard the proposed fit</td></tr>
+        <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>narrow / widen the fit band and refit</td></tr>
+        <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>move the fit centre one bin lower / higher</td></tr>
+        <tr><td><kbd>u</kbd></td><td>undo the last accepted mode</td></tr>
+        <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>step back / forward through accepted modes</td></tr>
+        <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>next / previous point in the circle plot</td></tr>
+        <tr><td>scroll, drag</td><td>zoom any plot; double-click to reset its zoom</td></tr>
+        <tr><td>click a point</td><td>on the mode shape or estimates plot: show its circle</td></tr>
+      </table>
+      <p>Legend entries can be clicked to hide or show curves. Your accepted modes are remembered in this
+        browser for each test, so you can restore them next time.</p>
+      <p>Full documentation: <a href="https://github.com/annejumper/IncrementalCircleFit#readme" target="_blank" rel="noopener">README on GitHub</a>.</p>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

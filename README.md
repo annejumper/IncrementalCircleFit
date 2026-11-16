@@ -2,7 +2,32 @@
 
 Interactive modal analysis of ObieApp roving-point FRF measurements. You pick resonance peaks one at a time. Each peak is circle-fitted to get its natural frequency, loss factor and mode shape, then subtracted from every FRF before you move on to the next one.
 
-## Requirements
+There are two ways to use it, with the same fitting code:
+
+- **Web app** (`index.html`): everything in one browser window, nothing to install.
+- **Desktop script** (`circle_fit_modes.py`): matplotlib windows, run from the command line.
+
+## Web app
+
+Open `index.html` from a web server (GitHub Pages, or locally as below) in Chrome, Edge or another current browser. Click **📁 Open test folder** and pick an ObieApp test folder (the one containing `TRF/` and `template.json`), or a folder of several tests and choose one. Everything runs in your browser: Python, NumPy and SciPy load through [Pyodide](https://pyodide.org) (15–30 s the first time, cached after that), and your data files are read locally and never uploaded.
+
+The page has the FRF plot on top (click a peak to fit it), the accepted modes on the left, and below: the circle for any point (slider or ↑ ↓), each point's own natural-frequency estimate, a zoom on the fitted peak and the mode shape. **Analytical ▸** opens the plate panel with the sliders, frequency band, Optimize button and pairing table. **Export** downloads `modes.csv` and `mode_shapes.csv` (the same files the desktop script writes) and gives a replay string. **Options** sets the frequency range, sign flip and global refinement. The keyboard shortcuts match the desktop script; **Help** lists them. Accepted modes are remembered in the browser for each test, and offered for restoring the next time you open it.
+
+To run it locally:
+
+```
+python3 -m http.server 8000
+```
+
+then open http://localhost:8000. (Opening `index.html` directly as a file does not work, because the page fetches `modal_core.py`.)
+
+Files: `index.html`, `web/app.js` (page and plots, using Plotly), `web/app.css` (styling, following ObieApp's theme), `web/worker.js` (runs Python in a background worker) and `web/api.py` (the bridge to `modal_core.py`).
+
+## Code layout
+
+All the maths lives in `modal_core.py`: file loading, circle fitting, the residual bookkeeping, the analytical plate model, peak pairing, optimization and the result tables. Both the desktop script and the web app use it, so they give identical results.
+
+## Requirements (desktop script)
 
 Python 3 with `numpy`, `scipy` and `matplotlib`:
 
@@ -12,7 +37,7 @@ pip install -r requirements.txt
 
 Tested with Python 3.14, numpy 2.5, scipy 1.18 and matplotlib 3.11.
 
-## Usage
+## Usage (desktop script)
 
 Point the script at an ObieApp test folder (one containing a `TRF/` subfolder of `.trf` files, and optionally `template.json` for point positions):
 
@@ -108,13 +133,12 @@ The plate is modelled as a thin (Kirchhoff) rectangular plate, clamped along one
 
 ## ObieApp `.trf` format
 
-The script reads this layout, which was worked out from the files themselves (little-endian):
+The reader follows ObieApp's own `trf_fileio.py`: a 110-byte little-endian header (`<I4d2s3d11f4s`) holding the frequency step, start and end frequency, `fComplex` and the number of bins, then the bins, then an optional `\0OBIE_META` text block.
 
-| Offset | Type | Field |
+| `fComplex` | Data per bin | Supported |
 |---|---|---|
-| 0x26 | float64 | Δf (Hz) |
-| 0x36 | float64 | f_max (Hz) |
-| 0x42 | float32 | number of frequency bins N |
-| 110 | N × (float64, float64, float64) | real, imaginary, coherence |
+| 0 | magnitude only | no (circle fitting needs complex FRFs) |
+| 1 | real, imaginary | yes |
+| 2 | real, imaginary, coherence | yes (what Acquire writes) |
 
-The bin data is followed by a `\0OBIE_META\n…` text trailer.
+Bins must start at 0 Hz.
