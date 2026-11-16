@@ -56,9 +56,18 @@ def _plate(js):
 
 
 # ----------------------------------------------------------------------------
-def load(folder, fmin, fmax, refine, flip, plate_js):
+def load(folder, fmin, fmax, refine, flip, plate_js, pad_s=0):
     global S, PROPOSAL, VIEW
     ds = mc.load_dataset(folder)
+    raw = mc.raw_info(ds, float(fmax))
+    if pad_s and float(pad_s) > 0:
+        ds = mc.zero_pad_dataset(ds, float(pad_s), float(fmax), raw=raw)
+    raw_summary = None
+    if raw is not None:
+        raw_summary = dict(n=sum(len(v) for v in raw["hits"].values()), record_s=raw["record_s"],
+                           error=raw["error"], hammer_channel=raw["hammer_channel"],
+                           clipped_response=raw["clipped_response"],
+                           clipped_hammer=raw["clipped_hammer"])
     if flip:
         ds["H"] = -ds["H"]
     ds["flipped"] = bool(flip)
@@ -69,7 +78,8 @@ def load(folder, fmin, fmax, refine, flip, plate_js):
     return json.dumps(dict(
         name=ds["name"], n_points=len(ds["labels"]), labels=ds["labels"], df=ds["df"],
         has_xy=ds["xy"] is not None, fmin=S.fmin, fmax=S.fmax,
-        coherence_mean=float(np.mean(ds["coh"][:, VIEW])),
+        coherence_mean=float(np.mean(ds["coh"][:, VIEW])), raw=raw_summary,
+        pad_s=ds.get("pad_s"), added_s=ds.get("added_s"), record_s=ds.get("record_s"),
         theory=_r(ds["theory"], 2) if ds["theory"] is not None else None))
 
 

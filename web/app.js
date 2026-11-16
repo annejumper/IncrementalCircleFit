@@ -78,7 +78,8 @@ const st = {
   fit: null,             // last fit_view result
   specs: null, sliders: {}, free: new Set(['E', 'k']), plate: null,
   theory: null, theoryPreview: null, theoryOn: true, band: null,
-  opts: { fmin: 20, fmax: 7000, flip: false, refine: true },
+  opts: { fmin: 20, fmax: 7000, flip: false, refine: true, pad: 0 },
+  showMeasured: true,
 };
 
 function status(msg, kind) {
@@ -90,8 +91,11 @@ function updateStatusRight() {
   const i = st.info;
   const parts = [];
   if (busy > 0) parts.push('working…');
-  if (i) parts.push(`${i.n_points} points · Δf ${i.df.toFixed(4)} Hz · ${st.top ? st.top.total : 0} modes`
-    + (st.opts.flip ? ' · sign flipped' : ''));
+  if (i) parts.push(`${i.n_points} points · Δf ${i.df.toFixed(4)} Hz`
+    + (i.pad_s ? ` (${i.record_s.toFixed(2)} s + ${i.added_s.toFixed(1)} s of zeros)` : '')
+    + ` · ${st.top ? st.top.total : 0} modes` + (st.opts.flip ? ' · sign flipped' : '')
+    + (i.raw && i.raw.clipped_response.length + i.raw.clipped_hammer.length
+       ? ` · ⚠ ${i.raw.clipped_response.length + i.raw.clipped_hammer.length} clipped recordings` : ''));
   $('status-right').textContent = parts.join('  ·  ');
 }
 
@@ -118,6 +122,7 @@ function loadPrefs() {
   $('theory-on').checked = st.theoryOn;
   $('opt-fmin').value = st.opts.fmin; $('opt-fmax').value = st.opts.fmax;
   $('opt-flip').checked = st.opts.flip; $('opt-refine').checked = st.opts.refine;
+  $('opt-pad').value = st.opts.pad || 0;
   syncTuneButton();
 }
 function savePrefs() {
@@ -136,11 +141,13 @@ $('dir-input').addEventListener('change', async (ev) => {
   ev.target.blur();
   if (!st.ready) { status('Python is still loading; try again in a moment.', 'err'); return; }
   const tests = new Map();
-  const get = (d) => { if (!tests.has(d)) tests.set(d, { trf: [], tpl: null }); return tests.get(d); };
+  const get = (d) => { if (!tests.has(d)) tests.set(d, { trf: [], raw: [], tpl: null }); return tests.get(d); };
   for (const f of files) {
     const p = f.webkitRelativePath || f.name;
     let m = p.match(/^(.*)\/TRF\/([^/]+\.trf)$/i);
     if (m) { get(m[1]).trf.push({ file: f, name: m[2] }); continue; }
+    m = p.match(/^(.*)\/raw\/([^/]+\.wav)$/i);
+    if (m) { get(m[1]).raw.push({ file: f, name: m[2] }); continue; }
     m = p.match(/^(.*)\/template\.json$/i);
     if (m) get(m[1]).tpl = f;
   }
@@ -152,7 +159,7 @@ $('dir-input').addEventListener('change', async (ev) => {
   for (const [dir, t] of list) {
     const b = document.createElement('button');
     b.className = 'pick-item';
-    b.innerHTML = `${esc(dir.split('/').pop())}<small>${esc(dir)} · ${t.trf.length} files</small>`;
+    b.innerHTML = `${esc(dir.split('/').pop())}<small>${esc(dir)} · ${t.trf.length} points${t.raw.length ? ` · ${t.raw.length} recordings` : ''}</small>`;
     b.onclick = () => { closeModals(); openTest(dir, t); };
     box.appendChild(b);
   }
@@ -166,6 +173,7 @@ async function openTest(dir, t) {
     const files = [];
     for (const x of t.trf) files.push({ path: 'TRF/' + x.name, buffer: await x.file.arrayBuffer() });
     if (t.tpl) files.push({ path: 'template.json', buffer: await t.tpl.arrayBuffer() });
+    for (const x of t.raw) files.push({ path: 'raw/' + x.name, buffer: await x.file.arrayBuffer() });
     await rpc({ fn: '__write', name, files }, files.map(f => f.buffer));
     st.folder = name;
     await loadSession(null);
@@ -174,8 +182,9 @@ async function openTest(dir, t) {
 
 async function loadSession(replay) {
   const plate = st.theoryOn ? await plateFromSliders() : null;
+  if (st.opts.pad > 0) status(`Rebuilding the FRFs with ${st.opts.pad} s of zeros added…`);
   const info = await call('load', '/data/' + st.folder, st.opts.fmin, st.opts.fmax,
-    st.opts.refine, st.opts.flip, plate ? JSON.stringify(plate) : null);
+    st.opts.refine, st.opts.flip, plate ? JSON.stringify(plate) : null, st.opts.pad);
   st.info = info;
   st.step = null; st.view = null; st.point = null; st.fit = null;
   st.theory = info.theory; st.theoryPreview = null;
@@ -186,17 +195,21 @@ async function loadSession(replay) {
   sl.max = info.n_points - 1;
   const t = await call('top', null, true, true);
   st.f = t.f; st.measured = t.measured;
+  let msg = null;
   if (replay) {
     const r = await call('replay', replay);
-    status(`Re-fitted ${r.done} modes` + (r.failed.length ? `; could not fit ${r.failed.join(', ')} Hz` : '') + '.', 'ok');
-  } else {
-    status(`Loaded ${info.name}: ${info.n_points} points. Click a peak or press n.`);
-    offerRestore();
+    msg = `Re-fitted ${r.done} modes` + (r.failed.length ? `; could not fit ${r.failed.join(', ')} Hz` : '') + '.';
   }
   await refreshTop();
   clearFit();
   if (st.top.total) { st.view = { which: 'mode', n: st.top.total }; await refreshFit(); }
   await refreshPairs();
+  // only now offer to restore, so a quick click can't race the loading above
+  if (msg) status(msg, 'ok');
+  else {
+    status(`Loaded ${info.name}: ${info.n_points} points. Click a peak or press n.` + clipNote());
+    offerRestore();
+  }
 }
 
 function offerRestore() {
@@ -206,7 +219,7 @@ function offerRestore() {
   if (!n) return;
   const el = $('status');
   el.className = 'status-txt';
-  el.textContent = `Loaded ${st.info.name}. Your previous session here had ${n} modes.`;
+  el.textContent = `Loaded ${st.info.name}. Your previous session here had ${n} modes.` + clipNote();
   const b = document.createElement('button');
   b.className = 'tb-btn accent';
   b.textContent = `Restore ${n} modes`;
@@ -219,6 +232,14 @@ function offerRestore() {
     await refreshPairs();
   };
   el.appendChild(b);
+}
+function clipNote() {
+  const r = st.info && st.info.raw;
+  if (!r) return '';
+  const parts = [];
+  if (r.clipped_response.length) parts.push(`${r.clipped_response.length} of ${r.n} recordings clip on the accelerometer channel`);
+  if (r.clipped_hammer.length) parts.push(`${r.clipped_hammer.length} of ${r.n} clip on the hammer channel`);
+  return parts.length ? `  ⚠ ${parts.join('; ')} (reach full scale), which distorts those FRFs.` : '';
 }
 function saveReplay() {
   if (!st.info || !st.top) return;
@@ -309,7 +330,7 @@ function topTitle() {
 
 function renderTop() {
   const t = st.top, tr = [];
-  tr.push({ x: st.f, y: st.measured, type: 'scattergl', mode: 'lines', name: 'measured',
+  if (st.showMeasured) tr.push({ x: st.f, y: st.measured, type: 'scattergl', mode: 'lines', name: 'measured',
             line: { color: COL.measured, width: 1 }, hovertemplate: '%{y:.1f} dB' });
   if (t.sum) tr.push({ x: st.f, y: t.sum, type: 'scattergl', mode: 'lines', name: `sum of ${t.n} modes (at bins)`,
                        line: { color: COL.sum, width: 1 }, visible: 'legendonly', hovertemplate: '%{y:.1f} dB' });
@@ -609,6 +630,14 @@ function shown() { return st.top ? (st.step == null ? st.top.total : st.step) : 
 async function act(a) {
   if (a === 'help') return openModal('help-modal');
   if (a === 'options') return openModal('options-modal');
+  if (a === 'measured') {
+    st.showMeasured = !st.showMeasured;
+    const b = $('btn-measured');
+    b.classList.toggle('active', !st.showMeasured);
+    b.innerHTML = (st.showMeasured ? 'Hide measured' : 'Show measured') + ' <kbd>m</kbd>';
+    if (st.top) renderTop();
+    return;
+  }
   if (a === 'tune') {
     $('tune').classList.toggle('hidden');
     syncTuneButton(); savePrefs();
@@ -673,7 +702,7 @@ document.addEventListener('keydown', (e) => {
   if (document.querySelector('.modal-overlay.active')) { if (e.key === 'Escape') closeModals(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const map = { n: 'next', a: 'accept', Enter: 'accept', x: 'discard', Escape: 'discard', '[': 'band-', ']': 'band+',
-                ',': 'left', '.': 'right', u: 'undo', ArrowLeft: 'prev', ArrowRight: 'nextstep' };
+                ',': 'left', '.': 'right', u: 'undo', m: 'measured', ArrowLeft: 'prev', ArrowRight: 'nextstep' };
   if (e.key === 'Enter' && e.target.tagName === 'BUTTON') return;
   if (map[e.key]) { e.preventDefault(); act(map[e.key]); return; }
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && st.fit) {
@@ -692,10 +721,14 @@ document.querySelectorAll('.modal-overlay').forEach(o => o.addEventListener('cli
 $('opt-apply').addEventListener('click', async () => {
   const fmin = parseFloat($('opt-fmin').value), fmax = parseFloat($('opt-fmax').value);
   if (!(fmin > 0 && fmax > fmin)) { alert('Enter a valid frequency range.'); return; }
-  st.opts = { fmin, fmax, flip: $('opt-flip').checked, refine: $('opt-refine').checked };
+  const pad = Math.max(0, parseFloat($('opt-pad').value) || 0);
+  const binsChange = pad !== st.opts.pad;
+  st.opts = { fmin, fmax, flip: $('opt-flip').checked, refine: $('opt-refine').checked, pad };
   savePrefs(); closeModals();
   if (st.info) {
-    const replay = st.top ? st.top.modes.map(m => `${m.peak_hz.toFixed(4)}:${m.side}`).join(',') : '';
+    // fit bands are stored in bins; when the bin spacing changes, let each band re-size itself
+    const replay = st.top ? st.top.modes.map(m => (binsChange ? m.peak_hz.toFixed(4)
+                                                               : `${m.peak_hz.toFixed(4)}:${m.side}`)).join(',') : '';
     try { await loadSession(replay || null); } catch (err) { status(err.message, 'err'); }
   }
 });

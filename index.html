@@ -55,6 +55,7 @@
     <button class="tb-btn" data-act="nextstep" title="Next step (→)">Next ▶</button>
     <button class="tb-btn" data-act="latest" title="Back to the latest step">Latest</button>
     <div class="tb-flex"></div>
+    <button class="tb-btn" data-act="measured" id="btn-measured" title="Show or hide the original measured FRF under the residual (m)">Hide measured <kbd>m</kbd></button>
     <button class="tb-btn" data-act="options">Options</button>
     <button class="tb-btn" data-act="export">Export</button>
     <button class="tb-btn" data-act="tune" title="Show or hide the analytical plate panel">Analytical ▸</button>
@@ -155,6 +156,13 @@
       <div class="pref-row"><label>Frequency range (Hz)</label>
         <input id="opt-fmin" type="number" class="tb-inp num" value="20"> –
         <input id="opt-fmax" type="number" class="tb-inp num" value="7000"></div>
+      <div class="pref-row"><label>Add zeros (s)</label>
+        <input id="opt-pad" type="number" class="tb-inp num" value="0" min="0" step="1">
+        <span class="pref-hint-inline">seconds of zeros after each recording (0 = off)</span></div>
+      <p class="hint" style="margin-left:158px">Zero padding: rebuilds the FRFs from the raw hit recordings
+        (<code>raw/*.wav</code>, after your time cutoff) with this many seconds of zeros added to each. The bins get finer,
+        e.g. 2 s + 6 s of zeros gives 4× more points per peak. It interpolates what was recorded rather than adding
+        information; only longer recordings truly increase resolution.</p>
       <div class="pref-row"><label>Flip sign</label>
         <input id="opt-flip" type="checkbox"> <span class="pref-hint-inline">for an accelerometer mounted upside down relative to the hammer</span></div>
       <div class="pref-row"><label>Global refinement</label>
@@ -203,6 +211,7 @@
         <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>narrow / widen the fit band and refit</td></tr>
         <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>move the fit centre one bin lower / higher</td></tr>
         <tr><td><kbd>u</kbd></td><td>undo the last accepted mode</td></tr>
+        <tr><td><kbd>m</kbd></td><td>hide / show the original measured FRF under the residual</td></tr>
         <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>step back / forward through accepted modes</td></tr>
         <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>next / previous point in the circle plot</td></tr>
         <tr><td>scroll, drag</td><td>zoom any plot; double-click to reset its zoom</td></tr>

@@ -1088,6 +1088,10 @@ def main():
                          "clamp depth in mm (length is perpendicular to the clamped edge; "
                          "the free span is length - clamp). 'none' turns it off. "
                          "Default 150,150,0.86,15 (measured plate thickness 0.86 mm)")
+    ap.add_argument("--pad-seconds", type=float, default=0.0,
+                    help="add this many seconds of zeros after each raw hit recording "
+                         "(raw/*.wav) and rebuild the FRFs, for finer frequency bins "
+                         "(0 = use the .trf files)")
     ap.add_argument("--flip-sign", action="store_true",
                     help="multiply all FRFs by -1, e.g. when the accelerometer is mounted upside "
                          "down relative to the hammer direction, so circles at points moving in "
@@ -1102,10 +1106,25 @@ def main():
 
     if args.no_gui:
         matplotlib.use("Agg")
-    ds = load_dataset(args.folder)
+    try:
+        ds = load_dataset(args.folder)
+        raw = raw_info(ds, args.fmax)
+        if args.pad_seconds > 0:
+            ds = zero_pad_dataset(ds, args.pad_seconds, args.fmax, raw=raw)
+    except ValueError as e:
+        sys.exit(str(e))
     outdir = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                       "CircleFit", ds["name"])
-    print(f"{ds['name']}: {len(ds['labels'])} points, df = {ds['df']:.4f} Hz")
+    print(f"{ds['name']}: {len(ds['labels'])} points, df = {ds['df']:.4f} Hz"
+          + (f" ({ds['added_s']:g} s of zeros added to each {ds['record_s']:.2f} s recording)"
+             if ds.get("pad_s") else ""))
+    if raw is not None and not raw["error"]:
+        n = sum(len(v) for v in raw["hits"].values())
+        for role, names in (("response (accelerometer)", raw["clipped_response"]),
+                            ("hammer", raw["clipped_hammer"])):
+            if names:
+                print(f"  warning: {len(names)} of {n} recordings reach full scale on the {role} "
+                      f"channel (clipped), e.g. {', '.join(names[:3])}")
     ds["flipped"] = args.flip_sign
     if args.flip_sign:
         ds["H"] = -ds["H"]

@@ -29,7 +29,11 @@ function writeFolder(name, files) {
   // Replace /data with this test folder: /data/<name>/TRF/*.trf (+ template.json)
   py.runPython('import shutil, os; shutil.rmtree("/data", ignore_errors=True)');
   py.FS.mkdirTree('/data/' + name + '/TRF');
-  for (const f of files) py.FS.writeFile('/data/' + name + '/' + f.path, new Uint8Array(f.buffer));
+  for (const f of files) {
+    const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
+    if (dir) py.FS.mkdirTree('/data/' + name + '/' + dir);
+    py.FS.writeFile('/data/' + name + '/' + f.path, new Uint8Array(f.buffer));
+  }
 }
 
 onmessage = async (e) => {

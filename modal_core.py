@@ -77,7 +77,7 @@ def load_dataset(folder):
                    for f in glob.glob(os.path.join(folder, "TRF", "*.trf"))
                    for m in [pat.search(f)] if m)
     if not files:
-        sys.exit(f"No {prefix}##.trf files found in {folder}/TRF")
+        raise ValueError(f"No {prefix}##.trf files found in {folder}/TRF")
 
     H, C, df0 = [], [], None
     for _, f in files:
@@ -85,7 +85,7 @@ def load_dataset(folder):
         if df0 is None:
             df0, n0 = df, len(h)
         elif abs(df - df0) > 1e-9 or len(h) != n0:
-            sys.exit(f"{f}: frequency axis differs from the other files")
+            raise ValueError(f"{f}: frequency axis differs from the other files")
         H.append(h)
         C.append(c)
     labels = [k for k, _ in files]
@@ -97,7 +97,147 @@ def load_dataset(folder):
         if all(k in pos for k in labels):
             xy = np.array([pos[k] for k in labels], float)
     return dict(name=os.path.basename(folder), f=np.arange(n0) * df0, df=df0,
-                H=np.array(H), coh=np.array(C), labels=labels, xy=xy)
+                H=np.array(H), coh=np.array(C), labels=labels, xy=xy,
+                folder=folder, template=tpl, prefix=prefix, bin_scale=1.0)
+
+
+# ----------------------------------------------------------------------------
+# Raw hit recordings and zero padding
+# ----------------------------------------------------------------------------
+def read_wav(path):
+    """(sample rate, samples x channels scaled to +-1, peak |x| per channel)."""
+    from scipy.io import wavfile
+    fs, x = wavfile.read(path)
+    if x.ndim == 1 or x.shape[1] < 2:
+        raise ValueError(f"{path}: expected a 2-channel (hammer + response) recording")
+    if np.issubdtype(x.dtype, np.integer):
+        x = x.astype(float) / float(np.iinfo(x.dtype).max + 1)
+    else:
+        x = x.astype(float)
+    return fs, x[:, :2], np.max(np.abs(x[:, :2]), axis=0)
+
+
+def load_raw_hits(ds):
+    """The raw hit recordings ObieApp's Acquire saves in <test>/raw/, as
+    {point label: [file path, ...]} (read later, one point at a time, to keep
+    memory down), plus the sample rate, the record length in samples and, per
+    channel, the recordings that reach full scale (clipped)."""
+    pat = re.compile(r" " + re.escape(ds["prefix"]) + r"(\d+)_(\d+)\.wav$", re.I)
+    hits, fs0, n0, clipped = {}, None, None, ([], [])
+    for f in sorted(glob.glob(os.path.join(ds["folder"], "raw", "*.wav"))):
+        m = pat.search(f)
+        if not m:
+            continue
+        fs, x, peak = read_wav(f)
+        if fs0 is None:
+            fs0, n0 = fs, len(x)
+        elif fs != fs0 or len(x) != n0:
+            raise ValueError(f"{f}: sample rate or length differs from the other recordings")
+        hits.setdefault(int(m.group(1)), []).append(f)
+        for ch in (0, 1):
+            if peak[ch] >= 0.999:
+                clipped[ch].append(os.path.basename(f))
+    return hits, fs0, n0, clipped
+
+
+def h1_from_hits(hits, fs, n_fft, ham_ch, tpl):
+    """H1 FRF (response / hammer) and coherence averaged over hits, as ObieApp's
+    Acquire computes it (standard P/F phase; the hammer and response are zeroed
+    after the template's time cutoffs), with each hit zero-padded to n_fft."""
+    pre = int(tpl.get("pre_trig_s", 0) * fs)
+    cut_h = tpl.get("time_cutoff_s")
+    cut_m = tpl.get("mic_time_cutoff_s", cut_h)
+    Sff = Spp = Sfp = 0
+    for path in hits:
+        x = read_wav(path)[1]
+        h, r = x[:, ham_ch].copy(), x[:, 1 - ham_ch].copy()
+        if cut_h is not None and pre + int(cut_h * fs) < len(h):
+            h[pre + int(cut_h * fs):] = 0
+        if cut_m is not None and pre + int(cut_m * fs) < len(r):
+            r[pre + int(cut_m * fs):] = 0
+        F, P = np.fft.rfft(h, n_fft), np.fft.rfft(r, n_fft)
+        Sff = Sff + np.abs(F) ** 2
+        Spp = Spp + np.abs(P) ** 2
+        Sfp = Sfp + np.conj(F) * P
+    eps = np.finfo(float).eps
+    H = Sfp / np.maximum(Sff, eps)
+    coh = np.clip(np.abs(Sfp) ** 2 / np.maximum(Sff * Spp, eps), 0, 1)
+    return H, coh
+
+
+def zero_pad_dataset(ds, add_s, fmax, raw=None):
+    """Rebuild every FRF from the raw recordings with add_s seconds of zeros
+    appended to each hit (after the template's time cutoffs), for bins
+    (record + add_s) / record times finer than the .trf.
+
+    Zero padding interpolates the spectrum of what was recorded; it adds no new
+    information. It is exact here only if the response has died away by the
+    end of the recording. Which channel is the hammer, and the overall scale,
+    are taken from whichever choice reproduces the .trf files, so the padded
+    FRFs line up with the originals. Bins above 1.05 * fmax are dropped to keep
+    memory down."""
+    raw = raw if raw is not None else raw_info(ds, fmax)
+    if raw is None or raw["missing"]:
+        raise ValueError("Zero padding needs the raw hit recordings (raw/*.wav); "
+                         + ("none found" if raw is None else f"missing for points {raw['missing'][:8]}"))
+    if raw["error"]:
+        raise ValueError(raw["error"])
+    hits, fs, n_rec = raw["hits"], raw["fs"], raw["n_rec"]
+    n_fft = n_rec + max(0, int(round(add_s * fs)))
+    keep = int(np.ceil(1.05 * fmax * n_fft / fs)) + 1
+    Hs, Cs = [], []
+    for p in ds["labels"]:
+        H, c = h1_from_hits(hits[p], fs, n_fft, raw["hammer_channel"], ds["template"])
+        Hs.append(H[:keep] * raw["scale"])
+        Cs.append(c[:keep])
+    out = dict(ds)
+    df = fs / n_fft
+    out.update(H=np.array(Hs), coh=np.array(Cs), df=df, f=np.arange(keep) * df,
+               bin_scale=n_fft / n_rec, pad_s=n_fft / fs, added_s=(n_fft - n_rec) / fs,
+               record_s=n_rec / fs)
+    return out
+
+
+def raw_info(ds, fmax=7000.0):
+    """What the raw recordings offer: None if there are none, else the hits,
+    sample rate, record length, which channel is the hammer and the scale (the
+    choice that reproduces the .trf files), how well that matches, and which
+    recordings clip on the hammer and on the response channel."""
+    hits, fs, n_rec, clipped = load_raw_hits(ds)
+    if not hits:
+        return None
+    out = dict(hits=hits, fs=fs, missing=[p for p in ds["labels"] if p not in hits],
+               n_rec=n_rec, hammer_channel=None, scale=1.0,
+               trf_match=None, error=None, clipped_hammer=[], clipped_response=[])
+    out["record_s"] = out["n_rec"] / fs
+    p0 = next((p for p in ds["labels"] if p in hits), None)
+    if p0 is None:
+        out["error"] = "No raw recordings match the points in TRF/"
+        return out
+    i0 = ds["labels"].index(p0)
+    band = (ds["f"] > 20) & (ds["f"] < fmax)
+    band = (ds["f"] > 20) & (ds["f"] < fmax)
+    Href = ds["H"][i0]
+    best = None
+    for ch in (0, 1):
+        H, _ = h1_from_hits(hits[p0], fs, out["n_rec"], ch, ds["template"])
+        if len(H) != len(Href):
+            out["error"] = "The raw recordings do not match the .trf frequency axis"
+            return out
+        scale = np.median(np.abs(Href[band]) / np.maximum(np.abs(H[band]), 1e-300))
+        err = np.median(np.abs(H[band] * scale - Href[band]) / np.abs(Href[band]))
+        if best is None or err < best[0]:
+            best = (err, ch, scale)
+    err, ch, scale = best
+    out.update(hammer_channel=ch, scale=scale, trf_match=err,
+               clipped_hammer=clipped[ch], clipped_response=clipped[1 - ch])
+    if err > 0.1:
+        out["error"] = (f"Could not reproduce the .trf FRFs from the raw recordings "
+                        f"(median difference {100 * err:.0f}%)")
+    return out
+
+
+
 
 
 # ----------------------------------------------------------------------------
@@ -469,9 +609,11 @@ class Session:
         return float(np.mean(mif_db(self.R[:, self.band])
                              - mif_db(self.ds["H"][:, self.band])))
 
-    def snap(self, f_click, search_bins=4):
+    def snap(self, f_click, search_bins=None):
         """Nearest local maximum of the residual to the clicked bin (not the
         largest value nearby, so a small peak next to a big one can be picked)."""
+        if search_bins is None:      # about +-2 Hz, whatever the bin spacing
+            search_bins = int(round(4 * self.ds.get("bin_scale", 1.0)))
         k = int(np.clip(round(f_click / self.ds["df"]), 1, len(self.f) - 2))
         lo, hi = max(k - search_bins - 1, 0), min(k + search_bins + 1, len(self.f) - 1)
         lv = rms_level(self.R[:, lo:hi + 1])
@@ -487,8 +629,11 @@ class Session:
             return None
         k = self.snap(f_click) if snap else int(round(f_click / self.ds["df"]))
         if side is None:
-            lo, hi = max(k - 60, 1), min(k + 60, len(self.f) - 1)
-            side = auto_half_width(rms_level(self.R[:, lo:hi]), k - lo)
+            r = self.ds.get("bin_scale", 1.0)     # finer bins after zero padding
+            w = int(round(60 * r))
+            lo, hi = max(k - w, 1), min(k + w, len(self.f) - 1)
+            side = auto_half_width(rms_level(self.R[:, lo:hi]), k - lo,
+                                   max_side=int(round(40 * r)))
         return fit_mode(self.f, self.R, k, side, self.refine)
 
     def accept(self, m):
