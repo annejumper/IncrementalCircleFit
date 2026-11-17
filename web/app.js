@@ -80,6 +80,7 @@ const st = {
   theory: null, theoryPreview: null, theoryOn: true, band: null,
   opts: { fmin: 20, fmax: 7000, flip: false, refine: true, pad: 0 },
   showMeasured: true,
+  topMode: 'all',        // top plot: 'all' (rms over points) or 'point' (the selected point)
 };
 
 function status(msg, kind) {
@@ -290,11 +291,27 @@ function theoryShapes(th, numbers) {
 // ─── Top FRF plot ──────────────────────────────────────────────────────────
 const refreshTop = coalesce(async () => {
   if (!st.info) return;
-  st.top = await call('top', st.step, true, false);
+  const pt = topPoint();
+  st.top = await call('top', st.step, true, false, pt == null ? -1 : pt);
   renderTop();
   renderModes();
   updateStatusRight();
 });
+
+function topPoint() {
+  if (st.topMode !== 'point') return null;
+  if (st.fit) return st.fit.nyquist.point;
+  return st.point;
+}
+function syncTopPoint() {          // the top plot follows the selected point
+  if (st.topMode === 'point' && st.top && st.top.point !== topPoint()) refreshTop();
+}
+function setTopButton() {
+  const b = $('btn-topmode');
+  const lab = st.top && st.top.label != null ? `point ${st.top.label}` : 'selected point';
+  b.innerHTML = (st.topMode === 'point' ? `FRF: ${lab}` : 'FRF: all points') + ' <kbd>p</kbd>';
+  b.classList.toggle('active', st.topMode === 'point');
+}
 
 function shownTheory() {
   if (!st.theoryOn) return null;
@@ -325,19 +342,21 @@ function topTitle() {
     const m = t.n ? `after mode ${t.n}, ${t.modes[t.n - 1].fr.toFixed(2)} Hz` : 'no modes removed';
     return `<span style="color:${COL.fr}"><b>Viewing step ${t.n} of ${t.total}</b> (${m}) · → or Latest to return · ${res}</span>`;
   }
-  return `<b>${esc(i.name)}</b> · ${t.total} mode${t.total === 1 ? '' : 's'} accepted · ${res}`;
+  const who = t.point != null ? ` · <b style="color:${COL.data}">point ${t.label}</b> (fitting still uses all points)` : '';
+  return `<b>${esc(i.name)}</b>${who} · ${t.total} mode${t.total === 1 ? '' : 's'} accepted · ${res}`;
 }
 
 function renderTop() {
   const t = st.top, tr = [];
-  if (st.showMeasured) tr.push({ x: st.f, y: st.measured, type: 'scattergl', mode: 'lines', name: 'measured',
+  const one = t.point != null, sfx = one ? ` (point ${t.label})` : '';
+  if (st.showMeasured) tr.push({ x: st.f, y: one ? t.measured : st.measured, type: 'scattergl', mode: 'lines', name: 'measured' + sfx,
             line: { color: COL.measured, width: 1 }, hovertemplate: '%{y:.1f} dB' });
-  if (t.sum) tr.push({ x: st.f, y: t.sum, type: 'scattergl', mode: 'lines', name: `sum of ${t.n} modes (at bins)`,
+  if (t.sum) tr.push({ x: st.f, y: t.sum, type: 'scattergl', mode: 'lines', name: `sum of ${t.n} modes (at bins)${sfx}`,
                        line: { color: COL.sum, width: 1 }, visible: 'legendonly', hovertemplate: '%{y:.1f} dB' });
   if (t.smooth) tr.push({ x: t.smooth.f, y: t.smooth.db, type: 'scattergl', mode: 'lines',
-                          name: `fitted model, ${t.n} modes (smooth)`, line: { color: COL.smooth, width: 1.3 },
+                          name: `fitted model, ${t.n} modes (smooth)${sfx}`, line: { color: COL.smooth, width: 1.3 },
                           hovertemplate: '%{y:.1f} dB' });
-  tr.push({ x: st.f, y: t.residual, type: 'scattergl', mode: 'lines', name: `residual after ${t.n} modes`,
+  tr.push({ x: st.f, y: t.residual, type: 'scattergl', mode: 'lines', name: `residual after ${t.n} modes${sfx}`,
             line: { color: COL.residual, width: 1 }, hovertemplate: '%{y:.1f} dB' });
   if (t.proposal) tr.push({ x: t.proposal.f, y: t.proposal.after, type: 'scatter', mode: 'lines',
                             name: 'residual after proposed mode', line: { color: COL.after, width: 2 },
@@ -345,12 +364,13 @@ function renderTop() {
   if (shownTheory()) tr.push({ x: [null], y: [null], type: 'scatter', mode: 'lines', name: 'analytical plate',
                                line: { color: COL.theory, dash: 'dash', width: 1 }, hoverinfo: 'skip' });
   const { shapes, annotations } = topShapes();
-  const lay = layout(topTitle(), 'Frequency (Hz)', 'rms |H| over points (dB)', {
+  const lay = layout(topTitle(), 'Frequency (Hz)', one ? `|H| at point ${t.label} (dB)` : 'rms |H| over points (dB)', {
     xaxis: { type: 'log', hoverformat: '.2f' }, hovermode: 'x unified', dragmode: 'zoom',
     uirevision: 'top-' + st.info.name, shapes, annotations, margin: { l: 52, r: 10, t: 40, b: 36 },
   });
   Plotly.react('plot-top', tr, lay, PCFG);
   wireTopClick();
+  setTopButton();
 }
 
 function topRelayoutTheory() {
@@ -415,6 +435,7 @@ const refreshFit = coalesce(async () => {
   const sl = $('point-slider');
   sl.value = r.nyquist.point;
   $('point-label').textContent = r.nyquist.label;
+  syncTopPoint();
 });
 const refreshPoints = coalesce(async () => {   // only what changes with the point
   if (!st.info || !st.view) return;
@@ -424,6 +445,7 @@ const refreshPoints = coalesce(async () => {   // only what changes with the poi
   st.fit = r;
   renderNyquist(r); renderEstimates(r); renderShape(r);
   $('point-label').textContent = r.nyquist.label;
+  syncTopPoint();
 });
 
 function uirev(r, extra = '') { return `${r.mode.uid}${extra}`; }
@@ -596,6 +618,8 @@ function wireBottomClicks() {
 
 function selectPoint(i) {
   st.point = i;
+  st.topMode = 'point';
+  setTopButton();
   $('point-slider').value = i;
   refreshPoints();
 }
@@ -630,6 +654,12 @@ function shown() { return st.top ? (st.step == null ? st.top.total : st.step) : 
 async function act(a) {
   if (a === 'help') return openModal('help-modal');
   if (a === 'options') return openModal('options-modal');
+  if (a === 'topmode') {
+    st.topMode = st.topMode === 'point' ? 'all' : 'point';
+    setTopButton();
+    if (st.top) refreshTop();
+    return;
+  }
   if (a === 'measured') {
     st.showMeasured = !st.showMeasured;
     const b = $('btn-measured');
@@ -702,7 +732,7 @@ document.addEventListener('keydown', (e) => {
   if (document.querySelector('.modal-overlay.active')) { if (e.key === 'Escape') closeModals(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const map = { n: 'next', a: 'accept', Enter: 'accept', x: 'discard', Escape: 'discard', '[': 'band-', ']': 'band+',
-                ',': 'left', '.': 'right', u: 'undo', m: 'measured', ArrowLeft: 'prev', ArrowRight: 'nextstep' };
+                ',': 'left', '.': 'right', u: 'undo', m: 'measured', p: 'topmode', ArrowLeft: 'prev', ArrowRight: 'nextstep' };
   if (e.key === 'Enter' && e.target.tagName === 'BUTTON') return;
   if (map[e.key]) { e.preventDefault(); act(map[e.key]); return; }
   if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && st.fit) {

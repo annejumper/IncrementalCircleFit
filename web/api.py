@@ -106,19 +106,26 @@ def residual_shown(step, sel):
     return R
 
 
-def top(step=None, smooth=True, measured=False):
+def top(step=None, smooth=True, measured=False, point=-1):
     """Everything the top FRF plot needs for the given step (None = latest).
-    The frequency axis and measured curve never change, so they are only sent
-    when asked for (once, after loading)."""
+    point < 0: rms over all points; otherwise that one point's FRF (|H| in dB).
+    The frequency axis and the all-points measured curve never change, so they
+    are only sent when asked for (once, after loading); a single point's
+    measured curve is always sent."""
     step = None if step is None or step >= len(S.modes) else int(step)
     n = len(S.modes) if step is None else step
+    pt = None if point is None or point < 0 else int(point)
+    rows = slice(None) if pt is None else slice(pt, pt + 1)
     f = S.f[VIEW]
-    H = S.ds["H"][:, VIEW]
-    Rv = residual_shown(step, VIEW)
-    out = dict(residual=_db(Rv), n=n, total=len(S.modes), step=step,
+    H = S.ds["H"][rows, VIEW]
+    Rv = residual_shown(step, VIEW)[rows]
+    out = dict(residual=_db(Rv), n=n, total=len(S.modes), step=step, point=pt,
+               label=None if pt is None else S.ds["labels"][pt],
                modes=[_mode_info(m) for m in S.modes])
+    if measured or pt is not None:
+        out["measured"] = _db(H)
     if measured:
-        out["f"], out["measured"] = _r(f, 4), _db(H)
+        out["f"] = _r(f, 4)
     out["sum"] = _db(H - Rv) if n else None
     sel = S.band & VIEW
     out["residual_db"] = float(np.mean(mc.mif_db(residual_shown(step, sel))
@@ -132,12 +139,19 @@ def top(step=None, smooth=True, measured=False):
                                                      m["fr"] * (1 + 4 * m["eta"]), 121)
                                          for m in ms]))
         ff = ff[(ff >= S.fmin * 0.8) & (ff <= S.fmax)]
-        out["smooth"] = dict(f=_r(ff, 4), db=_r(mc.model_db(ms, ff), 2))
+        if pt is None:
+            db = mc.model_db(ms, ff)
+        else:              # this point's own fitted model: sum of A_p * mode
+            w = 2 * np.pi * ff
+            Hm = sum(m["A"][pt] * (-(w**2)) * mc.mode_basis(w, 2 * np.pi * m["fr"], m["eta"])
+                     for m in ms)
+            db = 20 * np.log10(np.abs(Hm) + 1e-30)
+        out["smooth"] = dict(f=_r(ff, 4), db=_r(db, 2))
     if PROPOSAL is not None and step is None:
         p = PROPOSAL
         zz = np.arange(max(p["idx"][0] - 20, 1), min(p["idx"][-1] + 20, len(S.f) - 1))
         out["proposal"] = dict(_mode_info(p), f=_r(S.f[zz], 4),
-                               after=_db(S.R[:, zz] - mc.contribution(p, S.w[zz])))
+                               after=_db((S.R[:, zz] - mc.contribution(p, S.w[zz]))[rows]))
     th = S.ds.get("theory")
     out["theory"] = _r(th, 2) if th is not None else None
     return json.dumps(out)

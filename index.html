@@ -55,6 +55,7 @@
     <button class="tb-btn" data-act="nextstep" title="Next step (→)">Next ▶</button>
     <button class="tb-btn" data-act="latest" title="Back to the latest step">Latest</button>
     <div class="tb-flex"></div>
+    <button class="tb-btn" data-act="topmode" id="btn-topmode" title="Top plot: rms over all points, or the selected point's own FRF (p)">FRF: all points <kbd>p</kbd></button>
     <button class="tb-btn" data-act="measured" id="btn-measured" title="Show or hide the original measured FRF under the residual (m)">Hide measured <kbd>m</kbd></button>
     <button class="tb-btn" data-act="options">Options</button>
     <button class="tb-btn" data-act="export">Export</button>
@@ -211,11 +212,12 @@
         <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>narrow / widen the fit band and refit</td></tr>
         <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>move the fit centre one bin lower / higher</td></tr>
         <tr><td><kbd>u</kbd></td><td>undo the last accepted mode</td></tr>
+        <tr><td><kbd>p</kbd></td><td>top plot: all points (rms) or the selected point's own FRF</td></tr>
         <tr><td><kbd>m</kbd></td><td>hide / show the original measured FRF under the residual</td></tr>
         <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>step back / forward through accepted modes</td></tr>
         <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>next / previous point in the circle plot</td></tr>
         <tr><td>scroll, drag</td><td>zoom any plot; double-click to reset its zoom</td></tr>
-        <tr><td>click a point</td><td>on the mode shape or estimates plot: show its circle</td></tr>
+        <tr><td>click a point</td><td>on the mode shape or estimates plot: show its circle and its own FRF in the top plot</td></tr>
       </table>
       <p>Legend entries can be clicked to hide or show curves. Your accepted modes are remembered in this
         browser for each test, so you can restore them next time.</p>
